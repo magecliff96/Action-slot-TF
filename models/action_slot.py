@@ -150,33 +150,89 @@ class DynamicLinear(nn.Module):
             self.fc_layer = nn.Linear(self.input_dim, output_dim).to(x.device)
         return self.fc_layer(x)
 
+class EmbedToValue(nn.Module):
+    def __init__(self):
+        super(EmbedToValue, self).__init__()
+
+    def forward(self, x, output_dim):
+        batch_size, d1, d2, d3, d4 = x.size()
+        combined_dim = d1 * d2 * d3
+        # Flatten the middle dimensions into one combined dimension
+        x = x.view(batch_size, d1 * d2 * d3, d4)
+        # Define the linear layer dynamically based on the input combined_dim and output_dim
+        linear = nn.Linear(combined_dim, output_dim).to(x.device)
+        # Apply the linear transformation
+        x = linear(x.transpose(1, 2))
+        x = x.transpose(1, 2)
+        return x
+
 class DynamicTransformerEncoder(nn.Module):
     def __init__(self):
         super(DynamicTransformerEncoder, self).__init__()
-        self.nhead = 4
-        self.num_encoder_layers = 3
-        self.dim_feedforward = 1024
-        self.dropout = 0.1
-        self.encoder_layer = None
-        self.transformer_encoder = None
-    def _initialize_encoder(self, d_model):
-        self.encoder_layer = nn.TransformerEncoderLayer(
-            d_model=d_model,
-            nhead=self.nhead,
-            dim_feedforward=self.dim_feedforward,
-            dropout=self.dropout
+        self.num_heads = 4
+        self.dropout_rate = 0.1
+        self.ff_dim = 1024
+        self.initialized = False
+
+    def initialize(self, input_dim, d_model):
+        self.d_model = d_model        
+        # Initialize the projection layers
+        self.query_proj = nn.Linear(input_dim, d_model)
+        self.key_proj = nn.Linear(input_dim, d_model)
+        self.value_proj = nn.Linear(input_dim, d_model)
+        self.out_proj = nn.Linear(d_model, d_model)
+        assert d_model % self.num_heads == 0, "d_model must be divisible by num_heads"
+        self.depth = d_model // self.num_heads
+        # Initialize the feedforward layers
+        self.ffn = nn.Sequential(
+            nn.Linear(d_model, self.ff_dim),
+            nn.ReLU(),
+            nn.Linear(self.ff_dim, d_model)
         )
-        self.transformer_encoder = nn.TransformerEncoder(
-            self.encoder_layer,
-            num_layers=self.num_encoder_layers
-        )
-    def forward(self, x, d_model=None):
-        if self.transformer_encoder is None or self.encoder_layer.self_attn.embed_dim != d_model:
-            self._initialize_encoder(d_model)
-        self.transformer_encoder.to(x.device)
-        x = x.transpose(0, 1)
-        output = self.transformer_encoder(x)
-        output = output.transpose(0, 1)
+        # Initialize the dropout layers
+        self.dropout = nn.Dropout(self.dropout_rate)
+        self.initialized = True
+
+    def split_heads(self, x, batch_size):
+        x = x.view(batch_size, -1, self.num_heads, self.depth)
+        return x.permute(0, 2, 1, 3)  # (batch_size, num_heads, seq_length, depth)
+
+    def forward(self, query, key, value, d_model):
+        if not self.initialized or self.d_model != d_model:
+            self.initialize(query.size(-1), d_model)
+        
+        device = query.device  # Ensure all tensors are on the same device
+        
+        self.query_proj = self.query_proj.to(device)
+        self.key_proj = self.key_proj.to(device)
+        self.value_proj = self.value_proj.to(device)
+        self.out_proj = self.out_proj.to(device)
+        self.ffn = self.ffn.to(device)
+        self.dropout = self.dropout.to(device)
+        
+        batch_size = query.size(0)
+
+        # Linear projections
+        query = self.query_proj(query)
+        key = self.key_proj(key)
+        value = self.value_proj(value)
+        # Split into multiple heads
+        query = self.split_heads(query, batch_size)
+        key = self.split_heads(key, batch_size)
+        value = self.split_heads(value, batch_size)
+        # Scaled dot-product attention
+        scores = torch.matmul(query, key.transpose(-2, -1)) / torch.sqrt(torch.tensor(self.depth, dtype=torch.float32, device=device))
+        attention_weights = F.softmax(scores, dim=-1)
+        context = torch.matmul(attention_weights, value)
+        context = context.permute(0, 2, 1, 3).contiguous()
+        context = context.view(batch_size, -1, self.d_model)
+        # Output projection
+        output = self.out_proj(context)
+        output = self.dropout(output)
+        # Feedforward network
+        output = self.ffn(output)
+        output = self.dropout(output)
+        
         return output
 
 class ACTION_SLOT(nn.Module):
@@ -186,7 +242,7 @@ class ACTION_SLOT(nn.Module):
         self.hidden_dim2 = args.channel
         self.slot_dim, self.temp_dim = args.channel, args.channel
         self.num_ego_class = num_ego_class
-        self.ego_c = 128
+        self.ego_c = 512
         self.num_slots = num_slots
         if args.dataset == 'nuscenes' and args.pretrain == 'oats' and not 'nuscenes'in args.cp:
             num_actor_class = 35
@@ -376,6 +432,7 @@ class ACTION_SLOT(nn.Module):
         self.action_embedding_tensor = torch.tensor(self.action_embedding, dtype=torch.float32).to(self.args.device)
         self.embedding_fc = DynamicLinear(20).to(self.args.device)
         self.dynamic_transformer_encoder = DynamicTransformerEncoder()
+        self.embed_to_value = EmbedToValue()
 
 
 
@@ -434,9 +491,11 @@ class ACTION_SLOT(nn.Module):
         x = x.permute((0, 2, 3, 4, 1))
         # [bs, n, w, h, c]
         x = torch.reshape(x, (batch_size, new_seq_len, new_h, new_w, -1))
+        #x_value = x.clone().to(self.args.device)
         
         x, attn_masks = self.slot_attention(x)
 
+        #x_value = self.embed_to_value(x_value, x.size(-2))
         # no pool, 3d slot
         b, n, thw = attn_masks.shape
         attn_masks = attn_masks.reshape(b, n, -1)
@@ -462,8 +521,9 @@ class ACTION_SLOT(nn.Module):
         action_embed = action_embed.unsqueeze(0).repeat(x.size(0), 1, 1)  # [x(0), 64, 256]
 
         #combining embedding + transformer
-        #x = x + action_embed
-        x = self.dynamic_transformer_encoder(x, x.size(-1))
+        x_value = x.clone().to(self.args.device)
+        x = x + action_embed
+        x = self.dynamic_transformer_encoder(x, x, x_value, x.size(-1))
 
         #final process
         x = self.drop(x)

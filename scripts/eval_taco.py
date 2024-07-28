@@ -660,7 +660,7 @@ num_ego_class = 4
 num_actor_class = 64
 
 # Data
-val_set = taco.TACO(args=args, split='val')
+val_set = taco.TACO(args=args, split='test')
 dataloader_val = DataLoader(val_set, batch_size=1, shuffle=False, num_workers=4, pin_memory=True, drop_last=True)
 
 model = generate_model(args, num_ego_class, num_actor_class).cuda()

@@ -34,7 +34,7 @@ def get_parser():
     parser.add_argument('--bce_pos_weight', type=float, default=10, help='')
     parser.add_argument('--ce_pos_weight', type=float, default=1, help='')
     parser.add_argument('--ce_neg_weight', type=float, default=0.05, help='')
-    parser.add_argument('--ego_loss_weight', type=float, default=0.03, help='')
+    parser.add_argument('--ego_loss_weight', type=float, default=0.02, help='')
 
     
     # training
@@ -45,7 +45,7 @@ def get_parser():
     parser.add_argument('--lr', type=float, default=5e-4, help='Learning rate.')
     parser.add_argument('--scheduler', help="", action="store_true")
     
-    parser.add_argument('--val_every', type=int, default=10, help='Validation frequency (epochs).')
+    parser.add_argument('--val_every', type=int, default=1, help='Validation frequency (epochs).')
     parser.add_argument('--batch_size', type=int, default=8, help='Batch size')
     parser.add_argument('--num_workers', type=int, default=8, help='Number of train epochs.')
     parser.add_argument('--parallel', help="", action="store_true")

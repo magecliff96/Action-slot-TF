@@ -18,6 +18,7 @@ from scipy.optimize import linear_sum_assignment
 import torch
 import torch.optim as optim
 from torch.utils.data import DataLoader
+from torch.utils.data import ConcatDataset
 from torch.utils.tensorboard import SummaryWriter
 import torch.nn.functional as F
 import torch.nn as nn
@@ -47,6 +48,7 @@ def plot_result(result,args):
     plt.tight_layout()
     # Save the plot
     plt.savefig('result_plot.png')  # Save the plot to a file
+    print("Figures saved")
     plt.show()  # Optionally show the plot
 
 def lambda_lr(epoch):
@@ -138,45 +140,65 @@ class Engine(object):
                 pred_ego, pred_actor, attn = self.model(inputs)
             else:
                 pred_ego, pred_actor = self.model(inputs)
-        loss_dict = self.criterion({'ego':pred_ego,'actor':pred_actor,'attn':attn},batch, False if mode == 'train' else True)
-        if self.args.parallel:
-            for _, v in loss_dict.items():
-                if isinstance(v,torch.Tensor):
-                    v = v.mean()
 
-        ego_loss = loss_dict['ego']
-        if ego_loss is None:
-            ego_loss = torch.Tensor([0.0])
-        actor_loss = loss_dict['actor']
-        action_attn_loss, bg_attn_loss = loss_dict['attn']['attn_loss'], loss_dict['attn']['bg_attn_loss']
+        if mode == 'train':
+            loss_dict = self.criterion({'ego':pred_ego,'actor':pred_actor,'attn':attn},batch, False if mode == 'train' else True)
+            if self.args.parallel:
+                for _, v in loss_dict.items():
+                    if isinstance(v,torch.Tensor):
+                        v = v.mean()
 
-        if self.criterion.attn_loss_type == 1:
-            attn_loss = action_attn_loss
+            ego_loss = loss_dict['ego']
+            if ego_loss is None:
+                ego_loss = torch.Tensor([0.0])
+            actor_loss = loss_dict['actor']
+            action_attn_loss, bg_attn_loss = loss_dict['attn']['attn_loss'], loss_dict['attn']['bg_attn_loss']
 
-        elif self.criterion.attn_loss_type == 2:
-            attn_loss = action_attn_loss * self.args.action_attn_weight
+            if self.criterion.attn_loss_type == 1:
+                attn_loss = action_attn_loss
 
-            self.attn_loss_epoch += float(attn_loss.item())
-            self.action_attn_loss_epoch += float(action_attn_loss.item())
+            elif self.criterion.attn_loss_type == 2:
+                attn_loss = action_attn_loss * self.args.action_attn_weight
 
-        elif self.criterion.attn_loss_type == 3:
-            attn_loss = self.args.action_attn_weight * action_attn_loss + self.args.bg_attn_weight * bg_attn_loss
+                self.attn_loss_epoch += float(attn_loss.item())
+                self.action_attn_loss_epoch += float(action_attn_loss.item())
 
-            self.attn_loss_epoch += float(attn_loss.item())
-            self.action_attn_loss_epoch += float(action_attn_loss.item())
-            self.bg_attn_loss_epoch += float(bg_attn_loss.item())
-            
-        elif self.criterion.attn_loss_type == 4:
-            attn_loss = self.args.bg_attn_weight * bg_attn_loss
+            elif self.criterion.attn_loss_type == 3:
+                attn_loss = self.args.action_attn_weight * action_attn_loss + self.args.bg_attn_weight * bg_attn_loss
 
-            self.attn_loss_epoch += float(attn_loss.item())
-            self.bg_attn_loss_epoch += float(bg_attn_loss.item())
+                self.attn_loss_epoch += float(attn_loss.item())
+                self.action_attn_loss_epoch += float(action_attn_loss.item())
+                self.bg_attn_loss_epoch += float(bg_attn_loss.item())
+                
+            elif self.criterion.attn_loss_type == 4:
+                attn_loss = self.args.bg_attn_weight * bg_attn_loss
 
-        if 'slot' in self.args.model_name and (self.args.action_attn_weight>0. or  self.args.bg_attn_weight>0. or self.args.obj_mask):
-            loss = actor_loss + self.args.ego_loss_weight*ego_loss + attn_loss
-        else:
-            loss = actor_loss + self.args.ego_loss_weight*ego_loss
-        self.loss_epoch += float(loss.item())
+                self.attn_loss_epoch += float(attn_loss.item())
+                self.bg_attn_loss_epoch += float(bg_attn_loss.item())
+
+            if 'slot' in self.args.model_name and (self.args.action_attn_weight>0. or  self.args.bg_attn_weight>0. or self.args.obj_mask):
+                loss = actor_loss + self.args.ego_loss_weight*ego_loss + attn_loss
+            else:
+                loss = actor_loss + self.args.ego_loss_weight*ego_loss
+            self.loss_epoch += float(loss.item())
+        
+            actor_loss, ego_loss = actor_loss.mean(), ego_loss.mean()
+            self.actor_loss_epoch += float(actor_loss.item())
+            self.ego_loss_epoch += float(ego_loss.item())
+        
+        # if mode == 'train':
+            self.optimizer.zero_grad()
+            loss.backward()
+            self.optimizer.step()
+            if self.scheduler is not None:
+                self.scheduler.step()
+        # else:
+        #     if loss_dict['attn']['action_inter'] is not None:
+        #         self.action_inter.update(loss_dict['attn']['action_inter'])
+        #         self.action_union.update(loss_dict['attn']['action_union'])
+        #     if loss_dict['attn']['bg_inter'] is not None:
+        #         self.bg_inter.update(loss_dict['attn']['bg_inter'])
+        #         self.bg_union.update(loss_dict['attn']['bg_union'])
 
         _, pred_ego = torch.max(pred_ego.data, 1)
         ego, actor = batch['ego'] ,batch['actor']
@@ -202,24 +224,6 @@ class Engine(object):
             pred_actor = torch.sigmoid(pred_actor)
             self.map_pred_actor_list.append(pred_actor.detach().cpu().numpy())
             self.label_actor_list.append(actor.detach().cpu().numpy())
-        
-        actor_loss, ego_loss = actor_loss.mean(), ego_loss.mean()
-        self.actor_loss_epoch += float(actor_loss.item())
-        self.ego_loss_epoch += float(ego_loss.item())
-        
-        if mode == 'train':
-            self.optimizer.zero_grad()
-            loss.backward()
-            self.optimizer.step()
-            if self.scheduler is not None:
-                self.scheduler.step()
-        else:
-            if loss_dict['attn']['action_inter'] is not None:
-                self.action_inter.update(loss_dict['attn']['action_inter'])
-                self.action_union.update(loss_dict['attn']['action_union'])
-            if loss_dict['attn']['bg_inter'] is not None:
-                self.bg_inter.update(loss_dict['attn']['bg_inter'])
-                self.bg_union.update(loss_dict['attn']['bg_union'])
 
     def _parallel(self):
         self.model = nn.DataParallel(self.model)
@@ -289,7 +293,7 @@ class Engine(object):
         self.reset_log()
         with torch.no_grad():	
             for data in tqdm(dataloader):
-                self.step(data,'val')
+                self.step(data,'test')
             
             if args.action_attn_weight>0. or args.bg_attn_weight>0.:
                 attn_loss_epoch = self.attn_loss_epoch / self.num_batches
@@ -304,14 +308,14 @@ class Engine(object):
                     print('bg_attn_loss_epoch')
                     print(bg_attn_loss_epoch)
                 
-            if args.action_attn_weight >0 and args.bg_attn_weight>0:
-                iou = self.action_inter.sum / (self.action_union.sum + 1e-10)
-                for i, val in enumerate(iou):
-                    print('Action IoU {0}: {1:.2f}'.format(i, val * 100))
+            # if args.action_attn_weight >0 and args.bg_attn_weight>0:
+            #     iou = self.action_inter.sum / (self.action_union.sum + 1e-10)
+            #     for i, val in enumerate(iou):
+            #         print('Action IoU {0}: {1:.2f}'.format(i, val * 100))
 
-                iou = self.bg_inter.sum / (self.bg_union.sum + 1e-10)
-                for i, val in enumerate(iou):
-                    print('BG IoU {0}: {1:.2f}'.format(i, val * 100))
+            #     iou = self.bg_inter.sum / (self.bg_union.sum + 1e-10)
+            #     for i, val in enumerate(iou):
+            #         print('BG IoU {0}: {1:.2f}'.format(i, val * 100))
 
             map_pred_actor_list = np.stack(self.map_pred_actor_list, axis=0)
             label_actor_list = np.stack(self.label_actor_list, axis=0)
@@ -453,7 +457,7 @@ if __name__ == '__main__':
     print('initialize train set')
     train_set = TACO(args=args, split='train')
     print('initialize val set')
-    val_set = TACO(args=args, split='val')
+    val_set = TACO(args=args, split='test')
     
     dataloader_train = DataLoader(train_set, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, pin_memory=True, drop_last=True)    
     dataloader_val = DataLoader(val_set, batch_size=1, shuffle=False, num_workers=args.num_workers, pin_memory=True, drop_last=True)
@@ -476,6 +480,15 @@ if __name__ == '__main__':
 
     # Create logdir
     print(f'Checkpoint path: {logdir}')
+
+    model_path = '/home/magecliff/Traffic_Recognition/Action-slot-main/weights/taco_action_slot_best_model.pth'
+    pretrained_weights = torch.load(model_path)
+    excluded_params = ['head.fc_ego.1.weight', 'conv3d_ego.2.weight', 'conv3d_ego.2.bias']
+    filtered_weights = {k: v for k, v in pretrained_weights.items() if k not in excluded_params}
+    model.load_state_dict(filtered_weights, strict = False)
+    for name, param in model.named_parameters():
+        if name in filtered_weights:
+            param.requires_grad = False
 
     result_list = []
     for epoch in range(trainer.cur_epoch, args.epochs): 
