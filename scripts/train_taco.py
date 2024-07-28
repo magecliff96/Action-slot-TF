@@ -486,9 +486,9 @@ if __name__ == '__main__':
     excluded_params = ['head.fc_ego.1.weight', 'conv3d_ego.2.weight', 'conv3d_ego.2.bias']
     filtered_weights = {k: v for k, v in pretrained_weights.items() if k not in excluded_params}
     model.load_state_dict(filtered_weights, strict = False)
-    for name, param in model.named_parameters():
-        if name in filtered_weights:
-            param.requires_grad = False
+    # for name, param in model.named_parameters():
+    #     if name in filtered_weights:
+    #         param.requires_grad = False
 
     result_list = []
     for epoch in range(trainer.cur_epoch, args.epochs): 

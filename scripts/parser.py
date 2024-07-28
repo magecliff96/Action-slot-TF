@@ -40,7 +40,7 @@ def get_parser():
     # training
     parser.add_argument('--device', type=str, default='cuda', help='Device to use')
     parser.add_argument('--pretrain', type=str, default='', choices=['taco', 'oats'])
-    parser.add_argument('--epochs', type=int, default=100, help='Number of train epochs.')
+    parser.add_argument('--epochs', type=int, default=50, help='Number of train epochs.')
     parser.add_argument('--wd', type=float, default=0.07, help='')
     parser.add_argument('--lr', type=float, default=5e-4, help='Learning rate.')
     parser.add_argument('--scheduler', help="", action="store_true")

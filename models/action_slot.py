@@ -492,7 +492,7 @@ class ACTION_SLOT(nn.Module):
         # [bs, n, w, h, c]
         x = torch.reshape(x, (batch_size, new_seq_len, new_h, new_w, -1))
         #x_value = x.clone().to(self.args.device)
-        
+        x3d_features = x.reshape(batch_size, new_seq_len*new_h*new_w, -1)
         x, attn_masks = self.slot_attention(x)
 
         #x_value = self.embed_to_value(x_value, x.size(-2))
@@ -523,7 +523,7 @@ class ACTION_SLOT(nn.Module):
         #combining embedding + transformer
         x_value = x.clone().to(self.args.device)
         x = x + action_embed
-        x = self.dynamic_transformer_encoder(x, x, x_value, x.size(-1))
+        x = self.dynamic_transformer_encoder(x, x3d_features, x3d_features, x.size(-1))
 
         #final process
         x = self.drop(x)
