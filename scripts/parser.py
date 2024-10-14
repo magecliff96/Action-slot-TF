@@ -22,8 +22,8 @@ def get_parser():
     
     # attention
     parser.add_argument('--bg_slot', help="", action="store_true")
-    parser.add_argument('--action_attn_weight', type=float, default=0., help='')
-    parser.add_argument('--bg_attn_weight', type=float, default=0., help='')
+    parser.add_argument('--action_attn_weight', type=float, default=1, help='')
+    parser.add_argument('--bg_attn_weight', type=float, default=0.5, help='')
     parser.add_argument('--bg_mask', help="", action="store_true")
     parser.add_argument('--mask_every_frame', type=int, default=4, help='')
     parser.add_argument('--bg_upsample', type=int, default=4, help='')
@@ -34,14 +34,14 @@ def get_parser():
     parser.add_argument('--bce_pos_weight', type=float, default=10, help='')
     parser.add_argument('--ce_pos_weight', type=float, default=1, help='')
     parser.add_argument('--ce_neg_weight', type=float, default=0.05, help='')
-    parser.add_argument('--ego_loss_weight', type=float, default=0.02, help='')
+    parser.add_argument('--ego_loss_weight', type=float, default=0.03, help='')
 
     
     # training
     parser.add_argument('--device', type=str, default='cuda', help='Device to use')
     parser.add_argument('--pretrain', type=str, default='', choices=['taco', 'oats'])
     parser.add_argument('--epochs', type=int, default=50, help='Number of train epochs.')
-    parser.add_argument('--wd', type=float, default=0.07, help='')
+    parser.add_argument('--wd', type=float, default=0.05, help='')
     parser.add_argument('--lr', type=float, default=5e-4, help='Learning rate.')
     parser.add_argument('--scheduler', help="", action="store_true")
     

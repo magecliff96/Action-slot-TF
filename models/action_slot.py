@@ -150,90 +150,26 @@ class DynamicLinear(nn.Module):
             self.fc_layer = nn.Linear(self.input_dim, output_dim).to(x.device)
         return self.fc_layer(x)
 
-class EmbedToValue(nn.Module):
-    def __init__(self):
-        super(EmbedToValue, self).__init__()
+class SelfAttention(nn.Module):
+  def __init__(self, input_dim):
+    super(SelfAttention, self).__init__()
+    self.input_dim = input_dim
+    self.query = nn.Linear(input_dim, input_dim) # [batch_size, seq_length, input_dim]
+    self.key = nn.Linear(input_dim, input_dim) # [batch_size, seq_length, input_dim]
+    self.value = nn.Linear(input_dim, input_dim)
+    self.softmax = nn.Softmax(dim=2)
+   
+  def forward(self, x): # x.shape (batch_size, seq_length, input_dim)
+    queries = self.query(x)
+    keys = self.key(x)
+    values = self.value(x)
 
-    def forward(self, x, output_dim):
-        batch_size, d1, d2, d3, d4 = x.size()
-        combined_dim = d1 * d2 * d3
-        # Flatten the middle dimensions into one combined dimension
-        x = x.view(batch_size, d1 * d2 * d3, d4)
-        # Define the linear layer dynamically based on the input combined_dim and output_dim
-        linear = nn.Linear(combined_dim, output_dim).to(x.device)
-        # Apply the linear transformation
-        x = linear(x.transpose(1, 2))
-        x = x.transpose(1, 2)
-        return x
+    score = torch.bmm(queries, keys.transpose(1, 2))/(self.input_dim**0.5)
+    attention = self.softmax(score)
+    weighted = torch.bmm(attention, values)
+    return weighted
 
-class DynamicTransformerEncoder(nn.Module):
-    def __init__(self):
-        super(DynamicTransformerEncoder, self).__init__()
-        self.num_heads = 4
-        self.dropout_rate = 0.1
-        self.ff_dim = 1024
-        self.initialized = False
 
-    def initialize(self, input_dim, d_model):
-        self.d_model = d_model        
-        # Initialize the projection layers
-        self.query_proj = nn.Linear(input_dim, d_model)
-        self.key_proj = nn.Linear(input_dim, d_model)
-        self.value_proj = nn.Linear(input_dim, d_model)
-        self.out_proj = nn.Linear(d_model, d_model)
-        assert d_model % self.num_heads == 0, "d_model must be divisible by num_heads"
-        self.depth = d_model // self.num_heads
-        # Initialize the feedforward layers
-        self.ffn = nn.Sequential(
-            nn.Linear(d_model, self.ff_dim),
-            nn.ReLU(),
-            nn.Linear(self.ff_dim, d_model)
-        )
-        # Initialize the dropout layers
-        self.dropout = nn.Dropout(self.dropout_rate)
-        self.initialized = True
-
-    def split_heads(self, x, batch_size):
-        x = x.view(batch_size, -1, self.num_heads, self.depth)
-        return x.permute(0, 2, 1, 3)  # (batch_size, num_heads, seq_length, depth)
-
-    def forward(self, query, key, value, d_model):
-        if not self.initialized or self.d_model != d_model:
-            self.initialize(query.size(-1), d_model)
-        
-        device = query.device  # Ensure all tensors are on the same device
-        
-        self.query_proj = self.query_proj.to(device)
-        self.key_proj = self.key_proj.to(device)
-        self.value_proj = self.value_proj.to(device)
-        self.out_proj = self.out_proj.to(device)
-        self.ffn = self.ffn.to(device)
-        self.dropout = self.dropout.to(device)
-        
-        batch_size = query.size(0)
-
-        # Linear projections
-        query = self.query_proj(query)
-        key = self.key_proj(key)
-        value = self.value_proj(value)
-        # Split into multiple heads
-        query = self.split_heads(query, batch_size)
-        key = self.split_heads(key, batch_size)
-        value = self.split_heads(value, batch_size)
-        # Scaled dot-product attention
-        scores = torch.matmul(query, key.transpose(-2, -1)) / torch.sqrt(torch.tensor(self.depth, dtype=torch.float32, device=device))
-        attention_weights = F.softmax(scores, dim=-1)
-        context = torch.matmul(attention_weights, value)
-        context = context.permute(0, 2, 1, 3).contiguous()
-        context = context.view(batch_size, -1, self.d_model)
-        # Output projection
-        output = self.out_proj(context)
-        output = self.dropout(output)
-        # Feedforward network
-        output = self.ffn(output)
-        output = self.dropout(output)
-        
-        return output
 
 class ACTION_SLOT(nn.Module):
     def __init__(self, args, num_ego_class, num_actor_class, num_slots=21, box=False, videomae=None):
@@ -242,7 +178,7 @@ class ACTION_SLOT(nn.Module):
         self.hidden_dim2 = args.channel
         self.slot_dim, self.temp_dim = args.channel, args.channel
         self.num_ego_class = num_ego_class
-        self.ego_c = 512
+        self.ego_c = 128
         self.num_slots = num_slots
         if args.dataset == 'nuscenes' and args.pretrain == 'oats' and not 'nuscenes'in args.cp:
             num_actor_class = 35
@@ -301,9 +237,9 @@ class ACTION_SLOT(nn.Module):
                 self.resolution3d = (4, 8, 24)
             
         if args.allocated_slot:
-            self.head = Allocated_Head(self.slot_dim, num_ego_class, num_actor_class, self.ego_c)
+            self.head = Allocated_Head(self.slot_dim, num_ego_class, num_actor_class, self.ego_c)#concat edit
         else:
-            self.head = Head(self.slot_dim, num_ego_class, num_actor_class+1, self.ego_c)
+            self.head = Head(self.slot_dim, num_ego_class, num_actor_class+1, self.ego_c) # concat edit
 
         if self.num_ego_class != 0:
             self.conv3d_ego = nn.Sequential(
@@ -359,80 +295,81 @@ class ACTION_SLOT(nn.Module):
         #[0,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0]
         self.action_embedding = [
             #C:
-            [1,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0],#0
-            [0,1,0,0,0, 0,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0],
-            [0,0,1,0,0, 0,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0],#2
-            [0,0,0,1,0, 0,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0],
-            [0,0,0,0,1, 0,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0],#4
-            [0,0,0,0,0, 1,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0],
-            [0,0,0,0,0, 0,1,0,0,0, 0,0,0,0,0, 0,0,0,0,0],#6
-            [0,0,0,0,0, 0,0,1,0,0, 0,0,0,0,0, 0,0,0,0,0],
-            [0,0,0,0,0, 0,0,0,1,0, 0,0,0,0,0, 0,0,0,0,0],#8
-            [0,0,0,0,0, 0,0,0,0,1, 0,0,0,0,0, 0,0,0,0,0],
-            [0,0,0,0,0, 0,0,0,0,0, 1,0,0,0,0, 0,0,0,0,0],#10
-            [0,0,0,0,0, 0,0,0,0,0, 0,1,0,0,0, 0,0,0,0,0],##11
+            [1,0,0,1,0, 1,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0],#0
+            [1,0,0,1,0, 0,1,0,0,0, 0,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0],
+            [1,0,0,1,0, 0,0,1,0,0, 0,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0],#2
+            [1,0,0,1,0, 0,0,0,1,0, 0,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0],
+            [1,0,0,1,0, 0,0,0,0,1, 0,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0],#4
+            [1,0,0,1,0, 0,0,0,0,0, 1,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0],
+            [1,0,0,1,0, 0,0,0,0,0, 0,1,0,0,0, 0,0,0,0,0, 0,0,0,0,0],#6
+            [1,0,0,1,0, 0,0,0,0,0, 0,0,1,0,0, 0,0,0,0,0, 0,0,0,0,0],
+            [1,0,0,1,0, 0,0,0,0,0, 0,0,0,1,0, 0,0,0,0,0, 0,0,0,0,0],#8
+            [1,0,0,1,0, 0,0,0,0,0, 0,0,0,0,1, 0,0,0,0,0, 0,0,0,0,0],
+            [1,0,0,1,0, 0,0,0,0,0, 0,0,0,0,0, 1,0,0,0,0, 0,0,0,0,0],#10
+            [1,0,0,1,0, 0,0,0,0,0, 0,0,0,0,0, 0,1,0,0,0, 0,0,0,0,0],##11
             #C+:
-            [1,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0],#12
-            [0,1,0,0,0, 0,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0],
-            [0,0,1,0,0, 0,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0],#14
-            [0,0,0,1,0, 0,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0],
-            [0,0,0,0,1, 0,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0],#16
-            [0,0,0,0,0, 1,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0],
-            [0,0,0,0,0, 0,1,0,0,0, 0,0,0,0,0, 0,0,0,0,0],#18
-            [0,0,0,0,0, 0,0,1,0,0, 0,0,0,0,0, 0,0,0,0,0],
-            [0,0,0,0,0, 0,0,0,1,0, 0,0,0,0,0, 0,0,0,0,0],#20
-            [0,0,0,0,0, 0,0,0,0,1, 0,0,0,0,0, 0,0,0,0,0],
-            [0,0,0,0,0, 0,0,0,0,0, 1,0,0,0,0, 0,0,0,0,0],#22
-            [0,0,0,0,0, 0,0,0,0,0, 0,1,0,0,0, 0,0,0,0,0],##23
+            [1,0,0,0,1, 1,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0],#12
+            [1,0,0,0,1, 0,1,0,0,0, 0,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0],
+            [1,0,0,0,1, 0,0,1,0,0, 0,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0],#14
+            [1,0,0,0,1, 0,0,0,1,0, 0,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0],
+            [1,0,0,0,1, 0,0,0,0,1, 0,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0],#16
+            [1,0,0,0,1, 0,0,0,0,0, 1,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0],
+            [1,0,0,0,1, 0,0,0,0,0, 0,1,0,0,0, 0,0,0,0,0, 0,0,0,0,0],#18
+            [1,0,0,0,1, 0,0,0,0,0, 0,0,1,0,0, 0,0,0,0,0, 0,0,0,0,0],
+            [1,0,0,0,1, 0,0,0,0,0, 0,0,0,1,0, 0,0,0,0,0, 0,0,0,0,0],#20
+            [1,0,0,0,1, 0,0,0,0,0, 0,0,0,0,1, 0,0,0,0,0, 0,0,0,0,0],
+            [1,0,0,0,1, 0,0,0,0,0, 0,0,0,0,0, 1,0,0,0,0, 0,0,0,0,0],#22
+            [1,0,0,0,1, 0,0,0,0,0, 0,0,0,0,0, 0,1,0,0,0, 0,0,0,0,0],##23
             #B
-            [1,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0],#24
-            [0,1,0,0,0, 0,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0],
-            [0,0,1,0,0, 0,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0],#26
-            [0,0,0,1,0, 0,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0],
-            [0,0,0,0,1, 0,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0],#28
-            [0,0,0,0,0, 1,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0],
-            [0,0,0,0,0, 0,1,0,0,0, 0,0,0,0,0, 0,0,0,0,0],#30
-            [0,0,0,0,0, 0,0,1,0,0, 0,0,0,0,0, 0,0,0,0,0],
-            [0,0,0,0,0, 0,0,0,1,0, 0,0,0,0,0, 0,0,0,0,0],#32
-            [0,0,0,0,0, 0,0,0,0,1, 0,0,0,0,0, 0,0,0,0,0],
-            [0,0,0,0,0, 0,0,0,0,0, 1,0,0,0,0, 0,0,0,0,0],#34
-            [0,0,0,0,0, 0,0,0,0,0, 0,1,0,0,0, 0,0,0,0,0],##35
+            [0,1,0,1,0, 1,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0],#24
+            [0,1,0,1,0, 0,1,0,0,0, 0,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0],
+            [0,1,0,1,0, 0,0,1,0,0, 0,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0],#26
+            [0,1,0,1,0, 0,0,0,1,0, 0,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0],
+            [0,1,0,1,0, 0,0,0,0,1, 0,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0],#28
+            [0,1,0,1,0, 0,0,0,0,0, 1,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0],
+            [0,1,0,1,0, 0,0,0,0,0, 0,1,0,0,0, 0,0,0,0,0, 0,0,0,0,0],#30
+            [0,1,0,1,0, 0,0,0,0,0, 0,0,1,0,0, 0,0,0,0,0, 0,0,0,0,0],
+            [0,1,0,1,0, 0,0,0,0,0, 0,0,0,1,0, 0,0,0,0,0, 0,0,0,0,0],#32
+            [0,1,0,1,0, 0,0,0,0,0, 0,0,0,0,1, 0,0,0,0,0, 0,0,0,0,0],
+            [0,1,0,1,0, 0,0,0,0,0, 0,0,0,0,0, 1,0,0,0,0, 0,0,0,0,0],#34
+            [0,1,0,1,0, 0,0,0,0,0, 0,0,0,0,0, 0,1,0,0,0, 0,0,0,0,0],##35
             #B+
-            [1,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0],#36
-            [0,1,0,0,0, 0,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0],
-            [0,0,1,0,0, 0,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0],#38
-            [0,0,0,1,0, 0,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0],
-            [0,0,0,0,1, 0,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0],#40
-            [0,0,0,0,0, 1,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0],
-            [0,0,0,0,0, 0,1,0,0,0, 0,0,0,0,0, 0,0,0,0,0],#42
-            [0,0,0,0,0, 0,0,1,0,0, 0,0,0,0,0, 0,0,0,0,0],
-            [0,0,0,0,0, 0,0,0,1,0, 0,0,0,0,0, 0,0,0,0,0],#44
-            [0,0,0,0,0, 0,0,0,0,1, 0,0,0,0,0, 0,0,0,0,0],
-            [0,0,0,0,0, 0,0,0,0,0, 1,0,0,0,0, 0,0,0,0,0],#46
-            [0,0,0,0,0, 0,0,0,0,0, 0,1,0,0,0, 0,0,0,0,0],##47
+            [0,1,0,0,1, 1,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0],#36
+            [0,1,0,0,1, 0,1,0,0,0, 0,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0],
+            [0,1,0,0,1, 0,0,1,0,0, 0,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0],#38
+            [0,1,0,0,1, 0,0,0,1,0, 0,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0],
+            [0,1,0,0,1, 0,0,0,0,1, 0,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0],#40
+            [0,1,0,0,1, 0,0,0,0,0, 1,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0],
+            [0,1,0,0,1, 0,0,0,0,0, 0,1,0,0,0, 0,0,0,0,0, 0,0,0,0,0],#42
+            [0,1,0,0,1, 0,0,0,0,0, 0,0,1,0,0, 0,0,0,0,0, 0,0,0,0,0],
+            [0,1,0,0,1, 0,0,0,0,0, 0,0,0,1,0, 0,0,0,0,0, 0,0,0,0,0],#44
+            [0,1,0,0,1, 0,0,0,0,0, 0,0,0,0,1, 0,0,0,0,0, 0,0,0,0,0],
+            [0,1,0,0,1, 0,0,0,0,0, 0,0,0,0,0, 1,0,0,0,0, 0,0,0,0,0],#46
+            [0,1,0,0,1, 0,0,0,0,0, 0,0,0,0,0, 0,1,0,0,0, 0,0,0,0,0],##47
             #P
-            [0,0,0,0,0, 0,0,0,0,0, 0,0,1,0,0, 0,0,0,0,0],#48
-            [0,0,0,0,0, 0,0,0,0,0, 0,0,0,1,0, 0,0,0,0,0],
-            [0,0,0,0,0, 0,0,0,0,0, 0,0,0,0,1, 0,0,0,0,0],#50
-            [0,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0, 1,0,0,0,0],
-            [0,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0, 0,1,0,0,0],#52
-            [0,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0, 0,0,1,0,0],
-            [0,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0, 0,0,0,1,0],#54
-            [0,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0, 0,0,0,0,1],##55
+            [0,0,1,1,0, 0,0,0,0,0, 0,0,0,0,0, 0,0,1,0,0, 0,0,0,0,0],#48
+            [0,0,1,1,0, 0,0,0,0,0, 0,0,0,0,0, 0,0,0,1,0, 0,0,0,0,0],
+            [0,0,1,1,0, 0,0,0,0,0, 0,0,0,0,0, 0,0,0,0,1, 0,0,0,0,0],#50
+            [0,0,1,1,0, 0,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0, 1,0,0,0,0],
+            [0,0,1,1,0, 0,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0, 0,1,0,0,0],#52
+            [0,0,1,1,0, 0,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0, 0,0,1,0,0],
+            [0,0,1,1,0, 0,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0, 0,0,0,1,0],#54
+            [0,0,1,1,0, 0,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0, 0,0,0,0,1],##55
             #P+
-            [0,0,0,0,0, 0,0,0,0,0, 0,0,1,0,0, 0,0,0,0,0],#56
-            [0,0,0,0,0, 0,0,0,0,0, 0,0,0,1,0, 0,0,0,0,0],
-            [0,0,0,0,0, 0,0,0,0,0, 0,0,0,0,1, 0,0,0,0,0],#58
-            [0,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0, 1,0,0,0,0],
-            [0,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0, 0,1,0,0,0],#60
-            [0,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0, 0,0,1,0,0],
-            [0,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0, 0,0,0,1,0],#62
-            [0,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0, 0,0,0,0,1]###64
+            [0,0,1,0,1, 0,0,0,0,0, 0,0,0,0,0, 0,0,1,0,0, 0,0,0,0,0],#56
+            [0,0,1,0,1, 0,0,0,0,0, 0,0,0,0,0, 0,0,0,1,0, 0,0,0,0,0],
+            [0,0,1,0,1, 0,0,0,0,0, 0,0,0,0,0, 0,0,0,0,1, 0,0,0,0,0],#58
+            [0,0,1,0,1, 0,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0, 1,0,0,0,0],
+            [0,0,1,0,1, 0,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0, 0,1,0,0,0],#60
+            [0,0,1,0,1, 0,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0, 0,0,1,0,0],
+            [0,0,1,0,1, 0,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0, 0,0,0,1,0],#62
+            [0,0,1,0,1, 0,0,0,0,0, 0,0,0,0,0, 0,0,0,0,0, 0,0,0,0,1]###64
         ]
         self.action_embedding_tensor = torch.tensor(self.action_embedding, dtype=torch.float32).to(self.args.device)
-        self.embedding_fc = DynamicLinear(20).to(self.args.device)
-        self.dynamic_transformer_encoder = DynamicTransformerEncoder()
-        self.embed_to_value = EmbedToValue()
+        self.embedding_fc = DynamicLinear(25).to(self.args.device)
+        #self.ego_fc = DynamicLinear(self.ego_c).to(self.args.device)
+        #self.combined_fc = DynamicLinear(self.slot_dim*2).to(self.args.device)
+        self.SA = SelfAttention(self.slot_dim).to(self.args.device)
 
 
 
@@ -491,11 +428,9 @@ class ACTION_SLOT(nn.Module):
         x = x.permute((0, 2, 3, 4, 1))
         # [bs, n, w, h, c]
         x = torch.reshape(x, (batch_size, new_seq_len, new_h, new_w, -1))
-        #x_value = x.clone().to(self.args.device)
-        x3d_features = x.reshape(batch_size, new_seq_len*new_h*new_w, -1)
+        
         x, attn_masks = self.slot_attention(x)
 
-        #x_value = self.embed_to_value(x_value, x.size(-2))
         # no pool, 3d slot
         b, n, thw = attn_masks.shape
         attn_masks = attn_masks.reshape(b, n, -1)
@@ -520,10 +455,9 @@ class ACTION_SLOT(nn.Module):
         action_embed = self.embedding_fc(self.action_embedding_tensor, x.size(-1))
         action_embed = action_embed.unsqueeze(0).repeat(x.size(0), 1, 1)  # [x(0), 64, 256]
 
-        #combining embedding + transformer
-        x_value = x.clone().to(self.args.device)
+        #x = torch.cat((x, action_embed),dim=-1)
         x = x + action_embed
-        x = self.dynamic_transformer_encoder(x, x3d_features, x3d_features, x.size(-1))
+        #x = self.SA(x)
 
         #final process
         x = self.drop(x)

@@ -485,6 +485,8 @@ if __name__ == '__main__':
     pretrained_weights = torch.load(model_path)
     excluded_params = ['head.fc_ego.1.weight', 'conv3d_ego.2.weight', 'conv3d_ego.2.bias']
     filtered_weights = {k: v for k, v in pretrained_weights.items() if k not in excluded_params}
+    #excluded_keyword = 'head'
+    #filtered_weights = {k: v for k, v in filtered_weights.items() if excluded_keyword not in k}
     model.load_state_dict(filtered_weights, strict = False)
     # for name, param in model.named_parameters():
     #     if name in filtered_weights:
